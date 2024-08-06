@@ -1,0 +1,791 @@
+import sys
+import os
+import bge
+import math
+import mathutils
+import traceback
+import logging
+import time
+import pyqtgraph as pg
+import numpy as np
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QPushButton, QTabWidget, QFormLayout, QListWidget, QListWidgetItem, QMessageBox
+)
+from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtGui import QColor
+
+# import sys
+# import os
+# import bge
+# import math
+# import mathutils
+# import traceback
+# import logging
+# import pyqtgraph as pg
+# import numpy as np
+# from PyQt5.QtCore import QTimer
+# import time
+# from PyQt5.QtWidgets import (
+#     QApplication,
+#     QWidget,
+#     QVBoxLayout,
+#     QHBoxLayout,
+#     QLabel,
+#     QLineEdit,
+#     QPushButton,
+#     QTabWidget,
+#     QFormLayout,
+#     QListWidget,
+#     QListWidgetItem,
+#     QMessageBox,
+# )
+# from PyQt5.QtCore import QTimer, Qt
+# from PyQt5.QtGui import QColor
+
+# Configure logging
+log_file_path = os.path.join(bge.logic.expandPath("//"), "bge_debugger.log")
+logging.basicConfig(
+    filename=log_file_path,
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logging.info("BGE Debugger started")
+
+    
+class DebuggerWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("BGE Debugger")
+        self.setGeometry(100, 100, 1200, 600)  # Increased width to accommodate the graph
+
+        # Main Layouts
+        self.main_layout = QHBoxLayout()  # Changed to QHBoxLayout
+        self.left_layout = QVBoxLayout()
+        self.right_layout = QVBoxLayout()
+
+        # Initialize sub-layouts
+        self.control_layout = QHBoxLayout()
+        self.search_layout = QHBoxLayout()
+
+        # Game Controls
+        self.fps_input = QLineEdit("60")
+        self.fps_input.setFixedWidth(50)
+        self.fps_button = QPushButton("Set FPS")
+        self.fps_button.clicked.connect(self.set_fps)
+
+        self.speed_input = QLineEdit("1.0")
+        self.speed_input.setFixedWidth(50)
+        self.speed_button = QPushButton("Set Game Speed")
+        self.speed_button.clicked.connect(self.set_game_speed)
+
+        self.pause_button = QPushButton("Pause")
+        self.pause_button.clicked.connect(self.pause_game)
+        self.play_button = QPushButton("Play")
+        self.play_button.clicked.connect(self.play_game)
+        self.step_button = QPushButton("Step Frame")
+        self.step_button.clicked.connect(self.step_frame)
+
+        self.toggle_physics_button = QPushButton("Toggle Physics Viz")
+        self.toggle_physics_button.clicked.connect(self.toggle_physics_visualization)
+        self.toggle_mouse_button = QPushButton("Toggle Mouse")
+        self.toggle_mouse_button.clicked.connect(self.toggle_mouse)
+
+        # Add controls to control_layout
+        self.control_layout.addWidget(QLabel("FPS:"))
+        self.control_layout.addWidget(self.fps_input)
+        self.control_layout.addWidget(self.fps_button)
+        self.control_layout.addWidget(QLabel("Game Speed:"))
+        self.control_layout.addWidget(self.speed_input)
+        self.control_layout.addWidget(self.speed_button)
+        self.control_layout.addWidget(self.pause_button)
+        self.control_layout.addWidget(self.play_button)
+        self.control_layout.addWidget(self.step_button)
+        self.control_layout.addWidget(self.toggle_physics_button)
+        self.control_layout.addWidget(self.toggle_mouse_button)
+
+        # Search Bar
+        self.search_bar = QLineEdit()
+        self.search_bar.setPlaceholderText("Search Game Objects...")
+        self.search_bar.textChanged.connect(self.filter_objects)
+        self.search_layout.addWidget(QLabel("Search:"))
+        self.search_layout.addWidget(self.search_bar)
+
+        # Tabs for Properties
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.create_tab_widget("Physics"), "Physics")
+        self.tabs.addTab(self.create_tab_widget("Game"), "Game")
+        self.tabs.addTab(self.create_tab_widget("Transform"), "Transform")
+        self.tabs.addTab(self.create_tab_widget("Materials"), "Materials")
+        self.tabs.addTab(self.create_tab_widget("Animations"), "Animations")
+        self.tabs.addTab(self.create_tab_widget("Logic Sensors"), "Logic Sensors")
+
+        # Object List
+        self.object_list_widget = QListWidget()
+        self.object_list_widget.itemClicked.connect(self.select_object_from_list)
+
+        # Selected Object Label
+        self.selected_object_label = QLabel("Objects: ")
+        self.selected_object_label.setAlignment(Qt.AlignCenter)
+
+        # Performance Graph
+        self.graph_widget = pg.PlotWidget()
+        self.graph_widget.setBackground('w')
+        self.graph_widget.setTitle("BGE Performance")
+        self.graph_widget.setLabel('left', 'Time (ms)')
+        self.graph_widget.setLabel('bottom', 'Time (s)')
+        self.graph_widget.addLegend()
+
+        self.curves = {
+            'gpu': self.graph_widget.plot(pen='r', name='GPU'),
+            'physics': self.graph_widget.plot(pen='g', name='Physics'),
+            'rasterizer': self.graph_widget.plot(pen='b', name='Rasterizer'),
+            'network': self.graph_widget.plot(pen='c', name='Network'),
+            'logic': self.graph_widget.plot(pen='m', name='Logic'),
+            'animations': self.graph_widget.plot(pen='y', name='Animations')
+        }
+
+        self.right_layout.addWidget(self.graph_widget)
+
+        # Add layouts to main layout
+        self.left_layout.addLayout(self.control_layout)
+        self.left_layout.addLayout(self.search_layout)
+        self.left_layout.addWidget(self.selected_object_label)
+        self.left_layout.addWidget(self.object_list_widget)
+        self.left_layout.addWidget(self.tabs)
+
+        self.main_layout.addLayout(self.left_layout)
+        self.main_layout.addLayout(self.right_layout)
+        self.setLayout(self.main_layout)
+
+        # Performance data
+        self.performance_data = []
+
+        # Timer to update graph
+        self.graph_timer = QTimer(self)
+        self.graph_timer.timeout.connect(self.update_performance_graph)
+        self.graph_timer.start(1000)  # Update every second
+
+        # Timer to update properties
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.refresh_properties)
+        self.update_timer.start(100)  # Update every 100 ms
+
+        self.selected_object = None
+        self.property_labels = {}
+        self.property_entries = {}
+        self.property_inputs = {}
+        self.active_inputs = set()
+
+        self.update_object_list()
+
+    def create_tab_widget(self, category):
+        """Creates a tab with a form layout for displaying properties."""
+        widget = QWidget()
+        layout = QFormLayout()
+        widget.setLayout(layout)
+        return widget
+
+    def update_object_list(self):
+        """Updates the list of game objects."""
+        try:
+            scene = bge.logic.getCurrentScene()
+            
+            # Only update the object list if search bar is empty
+            if not self.search_bar.text():
+                self.object_list_widget.clear()
+
+                for obj in scene.objects:
+                    item = QListWidgetItem(obj.name)
+                    self.object_list_widget.addItem(item)
+        except Exception as e:
+            self.show_error("Error updating object list", e)
+    
+    def update_performance_graph(self):
+        current_time = time.time()
+        
+        # Collect performance data (replace this with your actual data collection method)
+        stats = bge.logic.getProfileInfo()
+        data_point = {
+            'time': current_time,
+            'gpu': stats.get('gpu', 0),
+            'physics': stats.get('physics', 0),
+            'rasterizer': stats.get('rasterizer', 0),
+            'network': stats.get('network', 0),
+            'logic': stats.get('logic', 0),
+            'animations': stats.get('animations', 0)
+        }
+        self.performance_data.append(data_point)
+
+        # Keep only the last 10 seconds of data
+        self.performance_data = [d for d in self.performance_data if current_time - d['time'] <= 10]
+
+        # Update graph
+        for key, curve in self.curves.items():
+            times = [d['time'] - current_time + 10 for d in self.performance_data]
+            values = [d[key] for d in self.performance_data]
+            curve.setData(times, values)
+
+        self.graph_widget.setXRange(0, 10, padding=0)
+        max_value = max(max(d[key] for d in self.performance_data) for key in self.curves.keys())
+        self.graph_widget.setYRange(0, max_value * 1.1, padding=0)
+
+    def filter_objects(self, text):
+        """Filter the object list based on the search text."""
+        try:
+            text = text.lower()
+            for i in range(self.object_list_widget.count()):
+                item = self.object_list_widget.item(i)
+                item.setHidden(text not in item.text().lower())
+        except Exception as e:
+            self.show_error("Error filtering objects", e)
+
+    def select_object_from_list(self, item):
+        """Selects a game object from the list."""
+        self.selected_object = item.text()
+        logging.info(f"Selected object: {self.selected_object}")
+        self.highlight_selected_item(item)
+        self.setup_properties()
+        self.selected_object_label.setText(f"Objects: {self.selected_object}")
+
+    def highlight_selected_item(self, selected_item):
+        """Highlights the selected item in the object list."""
+        for i in range(self.object_list_widget.count()):
+            item = self.object_list_widget.item(i)
+            if item == selected_item:
+                # Set the background color to orange when selected
+                item.setBackground(QColor("orange"))
+            else:
+                # Reset background color to white
+                item.setBackground(QColor("white"))
+
+    def setup_properties(self):
+        """Setup initial property widgets for the selected object."""
+        if not self.selected_object:
+            return
+
+        try:
+            scene = bge.logic.getCurrentScene()
+            obj = scene.objects.get(self.selected_object)
+            if not obj:
+                return
+
+            self.property_labels.clear()
+            self.property_entries.clear()
+            self.property_inputs.clear()
+
+            # Populate each tab
+            self.populate_physics_tab(obj)
+            self.populate_game_tab(obj)
+            self.populate_transform_tab(obj)
+            self.populate_materials_tab(obj)
+            self.populate_animations_tab(obj)
+            self.populate_logic_sensors_tab(obj)
+
+        except Exception as e:
+            self.show_error(f"Error setting up properties for object {self.selected_object}", e)
+
+    def populate_physics_tab(self, obj):
+        """Populate the physics tab with object physics properties."""
+        tab = self.tabs.widget(0)
+        layout = tab.layout()
+        self.clear_layout(layout)  # Clear any previous layout items
+
+        if obj.getPhysicsId():
+            self.create_vector_property_row(layout, obj, "linearVelocity")
+            self.create_vector_property_row(layout, obj, "angularVelocity")
+            self.create_scalar_property_row(layout, obj, "mass")
+        else:
+            layout.addRow(QLabel("No physics properties available."))
+
+    def populate_game_tab(self, obj):
+        """Populate the game tab with object game properties."""
+        tab = self.tabs.widget(1)
+        layout = tab.layout()
+        self.clear_layout(layout)  # Clear any previous layout items
+
+        for key in obj.getPropertyNames():
+            self.create_scalar_property_row(layout, obj, key)
+
+    # def populate_transform_tab(self, obj):
+    #     """Populate the transform tab with object transform properties."""
+    #     tab = self.tabs.widget(2)
+    #     layout = tab.layout()
+    #     self.clear_layout(layout)  # Clear any previous layout items
+
+    #     self.create_vector_property_row(layout, obj, "worldPosition", label="Position")
+    #     self.create_vector_property_row(layout, obj, "worldOrientation", label="Rotation", degrees=True, is_euler=True)
+    #     self.create_vector_property_row(layout, obj, "worldScale", label="Scale")
+
+    def populate_transform_tab(self, obj):
+        """Populate the transform tab with object transform properties."""
+        tab = self.tabs.widget(2)
+        layout = tab.layout()
+        self.clear_layout(layout)  # Clear any previous layout items
+
+        self.create_vector_property_row(layout, obj, "worldPosition", label="Position")
+        self.create_rotation_property_row(layout, obj)  # New method for rotation
+        self.create_vector_property_row(layout, obj, "worldScale", label="Scale")
+
+    def create_rotation_property_row(self, layout, obj):
+        """Creates a row for rotation property with inputs for each axis in degrees."""
+        try:
+            euler = obj.worldOrientation.to_euler()
+            components = ['X', 'Y', 'Z']
+            hbox = QHBoxLayout()
+
+            for i, component in enumerate(components):
+                value = math.degrees(euler[i])
+
+                input_field = QLineEdit()
+                input_field.setPlaceholderText(component)
+                input_field.setFixedWidth(50)
+                input_field.setAlignment(Qt.AlignLeft)
+                input_field.installEventFilter(self)
+                input_field.property_name = f"rotation_{component}"
+
+                current_value_label = QLabel(f"{component}: {truncate(value)}°")
+                self.property_inputs[f"rotation_{component}"] = input_field
+                self.property_labels[f"rotation_{component}"] = current_value_label
+
+                hbox.addWidget(input_field)
+                hbox.addWidget(current_value_label)
+
+            update_button = QPushButton("Update")
+            update_button.setFixedWidth(60)
+            update_button.clicked.connect(lambda: self.update_rotation_property(obj))
+
+            hbox.addWidget(update_button)
+            layout.addRow("Rotation (degrees):", hbox)
+
+        except Exception as e:
+            self.show_error(f"Error creating rotation property row", e)
+
+    def update_rotation_property(self, obj):
+        """Updates the object's rotation property with new component values in degrees."""
+        try:
+            components = ['X', 'Y', 'Z']
+            new_rotation = []
+            for component in components:
+                input_field = self.property_inputs.get(f"rotation_{component}")
+                if input_field:
+                    new_value = input_field.text().strip()
+                    if new_value:
+                        new_value = math.radians(float(new_value))  # Convert degrees to radians
+                        new_rotation.append(new_value)
+                    else:
+                        new_rotation.append(obj.worldOrientation.to_euler()[components.index(component)])
+
+            obj.worldOrientation = mathutils.Euler(new_rotation)
+
+            # Update the labels to reflect the new rotation values
+            for i, component in enumerate(components):
+                label = self.property_labels.get(f"rotation_{component}")
+                if label:
+                    display_value = math.degrees(new_rotation[i])
+                    label.setText(f"{component}: {truncate(display_value)}°")
+
+            # Clear the input fields after updating
+            for component in components:
+                input_field = self.property_inputs.get(f"rotation_{component}")
+                if input_field:
+                    input_field.clear()
+
+            logging.info(f"Updated rotation of {obj.name} to {new_rotation}")
+        except Exception as e:
+            self.show_error(f"Error updating rotation property", e)
+
+    def populate_materials_tab(self, obj):
+        """Populate the materials tab with object material properties."""
+        tab = self.tabs.widget(3)
+        layout = tab.layout()
+        self.clear_layout(layout)  # Clear any previous layout items
+
+        if hasattr(obj, 'meshes') and obj.meshes:
+            materials = [mat.name for mat in obj.meshes[0].materials]
+            layout.addRow("Materials:", QLabel(", ".join(materials)))
+        else:
+            layout.addRow(QLabel("No materials available."))
+
+    def populate_animations_tab(self, obj):
+        """Populate the animations tab with object animation properties."""
+        tab = self.tabs.widget(4)
+        layout = tab.layout()
+        self.clear_layout(layout)  # Clear any previous layout items
+
+        layout.addRow(QLabel("No animation data available."))  # Placeholder for animation data
+
+    def populate_logic_sensors_tab(self, obj):
+        """Populate the logic sensors tab with object logic sensors."""
+        tab = self.tabs.widget(5)
+        layout = tab.layout()
+        self.clear_layout(layout)  # Clear any previous layout items
+
+        layout.addRow(QLabel("No logic sensors available."))  # Placeholder for logic sensors
+
+    def create_scalar_property_row(self, layout, obj, property_name):
+        """Creates a row with a label for the property value and an input for editing."""
+        try:
+            # Get current value
+            current_value = truncate(obj[property_name]) if property_name in obj else None
+            input_field = QLineEdit()
+            input_field.setPlaceholderText("New value")
+            input_field.setFixedWidth(100)
+            input_field.setAlignment(Qt.AlignLeft)
+            input_field.installEventFilter(self)
+            input_field.property_name = property_name  # Store property name in the input field
+
+            update_button = QPushButton("Update")
+            update_button.setFixedWidth(60)
+            update_button.clicked.connect(lambda: self.update_scalar_property(obj, property_name, input_field.text()))
+
+            label = QLabel(f"{property_name}: {current_value}")
+            self.property_labels[property_name] = label
+            self.property_entries[property_name] = input_field
+
+            hbox = QHBoxLayout()
+            hbox.addWidget(input_field)
+            hbox.addWidget(label)
+            hbox.addWidget(update_button)
+
+            layout.addRow(hbox)
+
+        except Exception as e:
+            self.show_error(f"Error creating property row for {property_name}", e)
+
+    def create_rotation_property_row(self, layout, obj):
+        """Creates a row for rotation property with inputs for each axis in degrees."""
+        try:
+            euler = obj.worldOrientation.to_euler()
+            components = ['X', 'Y', 'Z']
+            hbox = QHBoxLayout()
+
+            for i, component in enumerate(components):
+                value = math.degrees(euler[i])
+
+                input_field = QLineEdit()
+                input_field.setPlaceholderText(component)
+                input_field.setFixedWidth(50)
+                input_field.setAlignment(Qt.AlignLeft)
+                input_field.installEventFilter(self)
+                input_field.property_name = f"rotation_{component}"
+
+                current_value_label = QLabel(f"{component}: {truncate(value)}°")
+                self.property_inputs[f"rotation_{component}"] = input_field
+                self.property_labels[f"rotation_{component}"] = current_value_label
+
+                hbox.addWidget(input_field)
+                hbox.addWidget(current_value_label)
+
+            update_button = QPushButton("Update")
+            update_button.setFixedWidth(60)
+            update_button.clicked.connect(lambda: self.update_rotation_property(obj))
+
+            hbox.addWidget(update_button)
+            layout.addRow("Rotation (degrees):", hbox)
+
+        except Exception as e:
+            self.show_error(f"Error creating rotation property row", e)
+
+    def create_vector_property_row(self, layout, obj, property_name, label=None, degrees=False, is_euler=False):
+        try:
+            if label is None:
+                label = property_name
+
+            if property_name == "worldOrientation" and is_euler:
+                vector = obj.worldOrientation.to_euler()
+            else:
+                vector = getattr(obj, property_name, None)
+            
+            if vector is not None:
+                components = ['X', 'Y', 'Z']
+                hbox = QHBoxLayout()
+
+                for i, component in enumerate(components):
+                    value = vector[i]
+                    if degrees:
+                        value = math.degrees(value)
+
+                    input_field = QLineEdit()
+                    input_field.setPlaceholderText(component)
+                    input_field.setFixedWidth(50)
+                    input_field.setAlignment(Qt.AlignLeft)
+                    input_field.installEventFilter(self)
+                    input_field.property_name = f"{property_name}_{component}"
+
+                    current_value_label = QLabel(f"{component}: {truncate(value)}")
+                    self.property_inputs[f"{property_name}_{component}"] = input_field
+                    self.property_labels[f"{property_name}_{component}"] = current_value_label
+
+                    hbox.addWidget(input_field)
+                    hbox.addWidget(current_value_label)
+
+                update_button = QPushButton("Update")
+                update_button.setFixedWidth(60)
+                update_button.clicked.connect(lambda: self.update_vector_property(obj, property_name, degrees, is_euler))
+
+                hbox.addWidget(update_button)
+                layout.addRow(f"{label}:", hbox)
+
+        except Exception as e:
+            self.show_error(f"Error creating vector property row for {property_name}", e)
+
+    def eventFilter(self, source, event):
+        if event.type() == event.FocusIn:
+            if hasattr(source, 'property_name'):
+                self.active_inputs.add(source.property_name)
+        elif event.type() == event.FocusOut:
+            if hasattr(source, 'property_name'):
+                self.active_inputs.discard(source.property_name)
+        return super().eventFilter(source, event)
+
+    def update_scalar_property(self, obj, property_name, new_value):
+        """Updates the object's scalar property with the new value."""
+        try:
+            if property_name in obj:
+                if new_value.strip():
+                    current_type = type(obj[property_name])
+                    if current_type is float:
+                        obj[property_name] = float(new_value)
+                    elif current_type is int:
+                        obj[property_name] = int(new_value)
+                    elif current_type is bool:
+                        obj[property_name] = new_value.lower() in ('true', '1', 'yes')
+                    else:
+                        obj[property_name] = new_value
+
+                    # Update the label to reflect the new value
+                    self.property_labels[property_name].setText(f"{property_name}: {obj[property_name]}")
+                    # Clear the input field after updating
+                    self.property_entries[property_name].clear()
+
+            logging.info(f"Updated {property_name} of {obj.name} to {new_value}")
+        except Exception as e:
+            self.show_error(f"Error updating property {property_name}", e)
+
+    def update_vector_property(self, obj, property_name, degrees=False, is_euler=False):
+        """Updates the object's vector property with new component values."""
+        try:
+            vector = obj.worldOrientation.to_euler() if property_name == "worldOrientation" and is_euler else getattr(obj, property_name)
+            components = ['X', 'Y', 'Z']
+            new_vector = []
+            for i, component in enumerate(components):
+                input_field = self.property_inputs.get(f"{property_name}_{component}")
+                if input_field:
+                    new_value = input_field.text().strip()
+                    if new_value:
+                        new_value = float(new_value)
+                        if degrees:
+                            new_value = math.radians(new_value)
+                        new_vector.append(new_value)
+                    else:
+                        new_vector.append(vector[i])
+
+            if is_euler:
+                obj.worldOrientation = mathutils.Euler(new_vector).to_matrix()
+            else:
+                setattr(obj, property_name, mathutils.Vector(new_vector))
+
+            # Update the labels to reflect the new vector values
+            for i, component in enumerate(components):
+                label = self.property_labels.get(f"{property_name}_{component}")
+                if label:
+                    display_value = math.degrees(new_vector[i]) if degrees else new_vector[i]
+                    label.setText(f"{component}: {truncate(display_value)}")
+
+            # Clear the input fields after updating
+            for component in components:
+                input_field = self.property_inputs.get(f"{property_name}_{component}")
+                if input_field:
+                    input_field.clear()
+
+            logging.info(f"Updated {property_name} of {obj.name} to {new_vector}")
+        except Exception as e:
+            self.show_error(f"Error updating vector property {property_name}", e)
+
+    def clear_layout(self, layout):
+        """Helper function to clear a layout."""
+        if layout is not None:
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+
+    # def refresh_properties(self):
+    #     """Refreshes the displayed property values of the selected object."""
+    #     try:
+    #         if not self.search_bar.text():
+    #             self.update_object_list()
+    #         if self.selected_object:
+    #             scene = bge.logic.getCurrentScene()
+    #             obj = scene.objects.get(self.selected_object)
+    #             if obj:
+    #                 for prop_name, label in self.property_labels.items():
+    #                     if prop_name not in self.active_inputs:
+    #                         if '_' in prop_name:  # Vector property
+    #                             base_prop, component = prop_name.split('_')
+    #                             vector = getattr(obj, base_prop, None)
+    #                             if vector is not None:
+    #                                 index = ['X', 'Y', 'Z'].index(component)
+    #                                 value = vector[index]
+    #                                 label.setText(f"{component}: {truncate(value)}")
+    #                         else:  # Scalar property
+    #                             current_value = obj[prop_name] if prop_name in obj else None
+    #                             label.setText(f"{prop_name}: {truncate(current_value)}")
+    #     except Exception as e:
+    #         self.show_error("Error refreshing properties", e)
+
+    def refresh_properties(self):
+        """Refreshes the displayed property values of the selected object."""
+        try:
+            if not self.search_bar.text():
+                self.update_object_list()
+            if self.selected_object:
+                scene = bge.logic.getCurrentScene()
+                obj = scene.objects.get(self.selected_object)
+                if obj:
+                    for prop_name, label in self.property_labels.items():
+                        if prop_name not in self.active_inputs:
+                            if prop_name.startswith('rotation_'):
+                                component = prop_name.split('_')[1]
+                                euler = obj.worldOrientation.to_euler()
+                                value = math.degrees(euler['XYZ'.index(component)])
+                                label.setText(f"{component}: {truncate(value)}°")
+                            elif '_' in prop_name:  # Other vector properties
+                                base_prop, component = prop_name.split('_')
+                                vector = getattr(obj, base_prop, None)
+                                if vector is not None:
+                                    index = ['X', 'Y', 'Z'].index(component)
+                                    value = vector[index]
+                                    label.setText(f"{component}: {truncate(value)}")
+                            else:  # Scalar property
+                                current_value = obj[prop_name] if prop_name in obj else None
+                                label.setText(f"{prop_name}: {truncate(current_value)}")
+        except Exception as e:
+            self.show_error("Error refreshing properties", e)
+
+    def set_fps(self):
+        """Set the game's frames per second."""
+        try:
+            fps = float(self.fps_input.text())
+            bge.logic.setLogicTicRate(fps)
+            logging.info(f"FPS set to {fps}")
+        except ValueError as e:
+            self.show_error("Invalid FPS value.", e)
+
+    def set_game_speed(self):
+        """Set the game speed."""
+        try:
+            speed = float(self.speed_input.text())
+            bge.logic.setTimeScale(speed)
+            logging.info(f"Game speed set to {speed}")
+        except ValueError as e:
+            self.show_error("Invalid game speed value.", e)
+
+    def pause_game(self):
+        """Pause the game."""
+        try:
+            bge.logic.setTimeScale(0)
+            logging.info("Game paused.")
+        except Exception as e:
+            self.show_error("Error pausing the game.", e)
+
+    def play_game(self):
+        """Resume the game."""
+        try:
+            bge.logic.setTimeScale(1)
+            logging.info("Game resumed.")
+        except Exception as e:
+            self.show_error("Error resuming the game.", e)
+
+    def step_frame(self):
+        """Step the game one frame forward."""
+        try:
+            bge.logic.nextFrame()
+            logging.info("Stepped one frame forward.")
+        except Exception as e:
+            self.show_error("Error stepping the frame.", e)
+
+    def toggle_physics_visualization(self):
+        """Toggle physics visualization."""
+        try:
+            # Placeholder for actual physics visualization toggling
+            logging.info("Physics visualization toggled (not implemented).")
+        except Exception as e:
+            self.show_error("Error toggling physics visualization.", e)
+
+    def toggle_mouse(self):
+        """Toggle mouse visibility."""
+        global mouse_visible
+        try:
+            mouse_visible = not mouse_visible
+            bge.render.showMouse(mouse_visible)
+            logging.info(f"Mouse visibility set to {mouse_visible}")
+        except Exception as e:
+            self.show_error("Error toggling mouse visibility.", e)
+
+    def show_error(self, message, exception=None):
+        """Display an error message box with the provided message and exception details."""
+        error_msg = message
+        if exception:
+            error_msg += f"\n\n{str(exception)}"
+            error_msg += f"\n\nTraceback:\n{traceback.format_exc()}"
+
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Critical)
+        msg_box.setWindowTitle("Error")
+        msg_box.setText(error_msg)
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.setWindowModality(Qt.ApplicationModal)
+        msg_box.exec_()
+
+        # Log to file
+        logging.error(error_msg)
+
+def truncate(value, digits=3):
+    """Truncate a float or list of floats to a specific number of decimal places."""
+    if isinstance(value, float):
+        return round(value, digits)
+    elif isinstance(value, (list, mathutils.Vector, mathutils.Euler)):
+        return [truncate(v, digits) for v in value]
+    return value
+
+def run_gui():
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+
+    # Create and show the debugger window
+    window = DebuggerWindow()
+    window.show()
+
+    return app, window
+
+def start_gui(cont):
+    try:
+        # Get the game object
+        obj = cont.owner
+
+        # Check if the GUI is already initialized using an object property
+        if 'gui_initialized' not in obj:
+            obj['app'], obj['window'] = run_gui()
+            obj['gui_initialized'] = True
+
+        # Process PyQt5 events to keep the UI responsive
+        if 'app' in obj:
+            obj['app'].processEvents()
+
+        # Update performance graph
+        if 'window' in obj:
+            obj['window'].update_performance_graph()
+
+    except Exception as e:
+        logging.error(f"Error initializing GUI: {e}")
+        traceback.print_exc()
+
+# Setup the logic brick to run this function every frame
+if __name__ == "__main__":
+    cont = bge.logic.getCurrentController()
+    start_gui(cont)
