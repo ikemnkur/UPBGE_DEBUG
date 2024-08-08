@@ -15,33 +15,6 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QColor
 
-# import sys
-# import os
-# import bge
-# import math
-# import mathutils
-# import traceback
-# import logging
-# import pyqtgraph as pg
-# import numpy as np
-# from PyQt5.QtCore import QTimer
-# import time
-# from PyQt5.QtWidgets import (
-#     QApplication,
-#     QWidget,
-#     QVBoxLayout,
-#     QHBoxLayout,
-#     QLabel,
-#     QLineEdit,
-#     QPushButton,
-#     QTabWidget,
-#     QFormLayout,
-#     QListWidget,
-#     QListWidgetItem,
-#     QMessageBox,
-# )
-# from PyQt5.QtCore import QTimer, Qt
-# from PyQt5.QtGui import QColor
 
 # Configure logging
 log_file_path = os.path.join(bge.logic.expandPath("//"), "bge_debugger.log")
@@ -58,10 +31,12 @@ class DebuggerWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("BGE Debugger")
-        self.setGeometry(100, 100, 1200, 600)  # Increased width to accommodate the graph
+        self.setGeometry(100, 100, 800, 600)  # Increased width to accommodate the graph
 
         # Main Layouts
-        self.main_layout = QHBoxLayout()  # Changed to QHBoxLayout
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
+        # self.main_layout = QHBoxLayout()  # Changed to QHBoxLayout
         self.left_layout = QVBoxLayout()
         self.right_layout = QVBoxLayout()
 
@@ -128,27 +103,25 @@ class DebuggerWindow(QWidget):
         # Selected Object Label
         self.selected_object_label = QLabel("Objects: ")
         self.selected_object_label.setAlignment(Qt.AlignCenter)
+        
 
-        # Performance Graph
-        self.graph_widget = pg.PlotWidget()
-        self.graph_widget.setBackground('w')
-        self.graph_widget.setTitle("BGE Performance")
-        self.graph_widget.setLabel('left', 'Time (ms)')
-        self.graph_widget.setLabel('bottom', 'Time (s)')
-        self.graph_widget.addLegend()
+        # Instead, add these widgets directly to the main_layout:
+        self.main_layout.addLayout(self.control_layout)
+        self.main_layout.addLayout(self.search_layout)
+        self.main_layout.addWidget(self.selected_object_label)
+        self.main_layout.addWidget(self.object_list_widget)
+        self.main_layout.addWidget(self.tabs)
 
-        self.curves = {
-            'gpu': self.graph_widget.plot(pen='r', name='GPU'),
-            'physics': self.graph_widget.plot(pen='g', name='Physics'),
-            'rasterizer': self.graph_widget.plot(pen='b', name='Rasterizer'),
-            'network': self.graph_widget.plot(pen='c', name='Network'),
-            'logic': self.graph_widget.plot(pen='m', name='Logic'),
-            'animations': self.graph_widget.plot(pen='y', name='Animations')
-        }
 
-        self.right_layout.addWidget(self.graph_widget)
+        # Create a button to open the performance graph window
+        self.open_graph_button = QPushButton("Open Performance Graph")
+        self.open_graph_button.clicked.connect(self.open_performance_graph)
+        self.main_layout.addWidget(self.open_graph_button)
 
-        # Add layouts to main layout
+        # Create the performance graph window (but don't show it yet)
+        self.performance_graph_window = PerformanceGraphWindow()
+
+        # # Add layouts to main layout
         self.left_layout.addLayout(self.control_layout)
         self.left_layout.addLayout(self.search_layout)
         self.left_layout.addWidget(self.selected_object_label)
@@ -162,10 +135,16 @@ class DebuggerWindow(QWidget):
         # Performance data
         self.performance_data = []
 
-        # Timer to update graph
-        self.graph_timer = QTimer(self)
-        self.graph_timer.timeout.connect(self.update_performance_graph)
-        self.graph_timer.start(1000)  # Update every second
+        # # Timer to update graph
+        # self.graph_timer = QTimer(self)
+        # self.graph_timer.timeout.connect(self.update_performance_graph)
+        # self.graph_timer.start(1000)  # Update every second
+
+        # Timer to collect performance data
+        self.performance_timer = QTimer(self)
+        self.performance_timer.timeout.connect(self.collect_performance_data)
+        self.performance_timer.start(250)  # Collect data every second
+
 
         # Timer to update properties
         self.update_timer = QTimer(self)
@@ -202,10 +181,16 @@ class DebuggerWindow(QWidget):
         except Exception as e:
             self.show_error("Error updating object list", e)
     
+    def open_performance_graph(self):
+        self.performance_graph_window.show()
+    
     def update_performance_graph(self):
+        if not self.performance_data:
+            return
+
         current_time = time.time()
         
-        # Collect performance data (replace this with your actual data collection method)
+         # Collect performance data (replace this with your actual data collection method)
         stats = bge.logic.getProfileInfo()
         data_point = {
             'time': current_time,
@@ -216,7 +201,13 @@ class DebuggerWindow(QWidget):
             'logic': stats.get('logic', 0),
             'animations': stats.get('animations', 0)
         }
-        self.performance_data.append(data_point)
+
+        # Update the graph in the separate window
+        self.performance_graph_window.update_graph(self.performance_data)
+
+        # Update the graph in the separate window
+        # self.performance_graph_window.update_graph(data_point)
+        # self.performance_data.append(data_point)
 
         # Keep only the last 10 seconds of data
         self.performance_data = [d for d in self.performance_data if current_time - d['time'] <= 10]
@@ -230,6 +221,28 @@ class DebuggerWindow(QWidget):
         self.graph_widget.setXRange(0, 10, padding=0)
         max_value = max(max(d[key] for d in self.performance_data) for key in self.curves.keys())
         self.graph_widget.setYRange(0, max_value * 1.1, padding=0)
+
+    def collect_performance_data(self):
+        stats = bge.logic.getProfileInfo()
+        current_time = time.time()
+        
+        data_point = {
+            'time': current_time,
+            'gpu': stats.get('GPU Latency:', (0, 0))[0],
+            'physics': stats.get('Physics:', (0, 0))[0],
+            'rasterizer': stats.get('Rasterizer:', (0, 0))[0],
+            'network': stats.get('Network:', (0, 0))[0],
+            'logic': stats.get('Logic:', (0, 0))[0],
+            'animations': stats.get('Animations:', (0, 0))[0]
+        }
+        
+        self.performance_data.append(data_point)
+        
+        # Keep only the last 10 seconds of data
+        self.performance_data = [d for d in self.performance_data if current_time - d['time'] <= 10]
+        
+        # Update the graph
+        self.update_performance_graph()
 
     def filter_objects(self, text):
         """Filter the object list based on the search text."""
@@ -307,16 +320,6 @@ class DebuggerWindow(QWidget):
 
         for key in obj.getPropertyNames():
             self.create_scalar_property_row(layout, obj, key)
-
-    # def populate_transform_tab(self, obj):
-    #     """Populate the transform tab with object transform properties."""
-    #     tab = self.tabs.widget(2)
-    #     layout = tab.layout()
-    #     self.clear_layout(layout)  # Clear any previous layout items
-
-    #     self.create_vector_property_row(layout, obj, "worldPosition", label="Position")
-    #     self.create_vector_property_row(layout, obj, "worldOrientation", label="Rotation", degrees=True, is_euler=True)
-    #     self.create_vector_property_row(layout, obj, "worldScale", label="Scale")
 
     def populate_transform_tab(self, obj):
         """Populate the transform tab with object transform properties."""
@@ -613,29 +616,7 @@ class DebuggerWindow(QWidget):
                 if widget is not None:
                     widget.deleteLater()
 
-    # def refresh_properties(self):
-    #     """Refreshes the displayed property values of the selected object."""
-    #     try:
-    #         if not self.search_bar.text():
-    #             self.update_object_list()
-    #         if self.selected_object:
-    #             scene = bge.logic.getCurrentScene()
-    #             obj = scene.objects.get(self.selected_object)
-    #             if obj:
-    #                 for prop_name, label in self.property_labels.items():
-    #                     if prop_name not in self.active_inputs:
-    #                         if '_' in prop_name:  # Vector property
-    #                             base_prop, component = prop_name.split('_')
-    #                             vector = getattr(obj, base_prop, None)
-    #                             if vector is not None:
-    #                                 index = ['X', 'Y', 'Z'].index(component)
-    #                                 value = vector[index]
-    #                                 label.setText(f"{component}: {truncate(value)}")
-    #                         else:  # Scalar property
-    #                             current_value = obj[prop_name] if prop_name in obj else None
-    #                             label.setText(f"{prop_name}: {truncate(current_value)}")
-    #     except Exception as e:
-    #         self.show_error("Error refreshing properties", e)
+
 
     def refresh_properties(self):
         """Refreshes the displayed property values of the selected object."""
@@ -743,6 +724,69 @@ class DebuggerWindow(QWidget):
 
         # Log to file
         logging.error(error_msg)
+
+class PerformanceGraphWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("BGE Performance Graph")
+        self.setGeometry(300, 300, 600, 400)  # Adjust size as needed
+
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        self.graph_widget = pg.PlotWidget()
+        self.graph_widget.setBackground('w')
+        self.graph_widget.setTitle("BGE Performance")
+        self.graph_widget.setLabel('left', 'Time (ms)')
+        self.graph_widget.setLabel('bottom', 'Time (s)')
+        self.graph_widget.addLegend()
+
+        layout.addWidget(self.graph_widget)
+
+        self.curves = {
+            'gpu': self.graph_widget.plot(pen='r', name='GPU'),
+            'physics': self.graph_widget.plot(pen='g', name='Physics'),
+            'rasterizer': self.graph_widget.plot(pen='b', name='Rasterizer'),
+            'network': self.graph_widget.plot(pen='c', name='Network'),
+            'logic': self.graph_widget.plot(pen='m', name='Logic'),
+            'animations': self.graph_widget.plot(pen='y', name='Animations')
+        }
+
+        self.performance_data = []
+
+    def update_graph(self, performance_data):
+        if not performance_data:
+            return
+
+        current_time = time.time()
+        self.performance_data = performance_data
+
+        # Update graph
+        for key, curve in self.curves.items():
+            times = [d['time'] - current_time + 10 for d in self.performance_data]
+            values = [d[key] for d in self.performance_data]
+            curve.setData(times, values)
+
+        self.graph_widget.setXRange(0, 10, padding=0)
+        max_value = max(max(d[key] for d in self.performance_data) for key in self.curves.keys())
+        self.graph_widget.setYRange(0, max_value * 1.1, padding=0)
+
+    # def update_graph(self, data_point):
+    #     current_time = time.time()
+    #     self.performance_data.append(data_point)
+
+    #     # Keep only the last 10 seconds of data
+    #     self.performance_data = [d for d in self.performance_data if current_time - d['time'] <= 10]
+
+    #     # Update graph
+    #     for key, curve in self.curves.items():
+    #         times = [d['time'] - current_time + 10 for d in self.performance_data]
+    #         values = [d[key] for d in self.performance_data]
+    #         curve.setData(times, values)
+
+    #     self.graph_widget.setXRange(0, 10, padding=0)
+    #     max_value = max(max(d[key] for d in self.performance_data) for key in self.curves.keys())
+    #     self.graph_widget.setYRange(0, max_value * 1.1, padding=0)
 
 def truncate(value, digits=3):
     """Truncate a float or list of floats to a specific number of decimal places."""
