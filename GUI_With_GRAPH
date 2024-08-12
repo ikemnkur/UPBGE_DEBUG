@@ -8,13 +8,21 @@ import logging
 import time
 import pyqtgraph as pg
 import numpy as np
+
+# from PyQt5.QtWidgets import (
+#         QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+#         QPushButton, QTabWidget, QFormLayout, QListWidget, QListWidgetItem, QMessageBox,
+#         QSplitter, QScrollArea
+#     )
+
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QTabWidget, QFormLayout, QListWidget, QListWidgetItem, QMessageBox
+    QPushButton, QTabWidget, QFormLayout, QListWidget, QListWidgetItem, QMessageBox,
+    QSplitter, QScrollArea
 )
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QColor
-
+from PyQt5.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QLineEdit
 
 # Configure logging
 log_file_path = os.path.join(bge.logic.expandPath("//"), "bge_debugger.log")
@@ -34,7 +42,7 @@ class DebuggerWindow(QWidget):
         self.setGeometry(100, 100, 800, 600)  # Increased width to accommodate the graph
 
         # Main Layouts
-        self.main_layout = QVBoxLayout()
+        self.main_layout = QVBoxLayout(self)
         self.setLayout(self.main_layout)
         # self.main_layout = QHBoxLayout()  # Changed to QHBoxLayout
         self.left_layout = QVBoxLayout()
@@ -62,11 +70,6 @@ class DebuggerWindow(QWidget):
         self.step_button = QPushButton("Step Frame")
         self.step_button.clicked.connect(self.step_frame)
 
-        self.toggle_physics_button = QPushButton("Toggle Physics Viz")
-        self.toggle_physics_button.clicked.connect(self.toggle_physics_visualization)
-        self.toggle_mouse_button = QPushButton("Toggle Mouse")
-        self.toggle_mouse_button.clicked.connect(self.toggle_mouse)
-
         # Add controls to control_layout
         self.control_layout.addWidget(QLabel("FPS:"))
         self.control_layout.addWidget(self.fps_input)
@@ -77,8 +80,6 @@ class DebuggerWindow(QWidget):
         self.control_layout.addWidget(self.pause_button)
         self.control_layout.addWidget(self.play_button)
         self.control_layout.addWidget(self.step_button)
-        self.control_layout.addWidget(self.toggle_physics_button)
-        self.control_layout.addWidget(self.toggle_mouse_button)
 
         # Search Bar
         self.search_bar = QLineEdit()
@@ -103,6 +104,7 @@ class DebuggerWindow(QWidget):
         # Selected Object Label
         self.selected_object_label = QLabel("Objects: ")
         self.selected_object_label.setAlignment(Qt.AlignCenter)
+        self.selected_object = None
         
 
         # Instead, add these widgets directly to the main_layout:
@@ -134,11 +136,6 @@ class DebuggerWindow(QWidget):
 
         # Performance data
         self.performance_data = []
-
-        # # Timer to update graph
-        # self.graph_timer = QTimer(self)
-        # self.graph_timer.timeout.connect(self.update_performance_graph)
-        # self.graph_timer.start(1000)  # Update every second
 
         # Timer to collect performance data
         self.performance_timer = QTimer(self)
@@ -189,38 +186,13 @@ class DebuggerWindow(QWidget):
             return
 
         current_time = time.time()
-        
-         # Collect performance data (replace this with your actual data collection method)
-        stats = bge.logic.getProfileInfo()
-        data_point = {
-            'time': current_time,
-            'gpu': stats.get('gpu', 0),
-            'physics': stats.get('physics', 0),
-            'rasterizer': stats.get('rasterizer', 0),
-            'network': stats.get('network', 0),
-            'logic': stats.get('logic', 0),
-            'animations': stats.get('animations', 0)
-        }
 
         # Update the graph in the separate window
         self.performance_graph_window.update_graph(self.performance_data)
 
-        # Update the graph in the separate window
-        # self.performance_graph_window.update_graph(data_point)
-        # self.performance_data.append(data_point)
-
         # Keep only the last 10 seconds of data
         self.performance_data = [d for d in self.performance_data if current_time - d['time'] <= 10]
 
-        # Update graph
-        for key, curve in self.curves.items():
-            times = [d['time'] - current_time + 10 for d in self.performance_data]
-            values = [d[key] for d in self.performance_data]
-            curve.setData(times, values)
-
-        self.graph_widget.setXRange(0, 10, padding=0)
-        max_value = max(max(d[key] for d in self.performance_data) for key in self.curves.keys())
-        self.graph_widget.setYRange(0, max_value * 1.1, padding=0)
 
     def collect_performance_data(self):
         stats = bge.logic.getProfileInfo()
@@ -244,6 +216,10 @@ class DebuggerWindow(QWidget):
         # Update the graph
         self.update_performance_graph()
 
+        # Update the graph if the performance window is visible
+        if self.performance_graph_window.isVisible():
+            self.performance_graph_window.update_graph(self.performance_data)
+
     def filter_objects(self, text):
         """Filter the object list based on the search text."""
         try:
@@ -256,11 +232,23 @@ class DebuggerWindow(QWidget):
 
     def select_object_from_list(self, item):
         """Selects a game object from the list."""
-        self.selected_object = item.text()
-        logging.info(f"Selected object: {self.selected_object}")
+        self.selected_object = bge.logic.getCurrentScene().objects[item.text()]
+        logging.info(f"Selected object: {self.selected_object.name}")
         self.highlight_selected_item(item)
+        
+        # Clear existing properties
+        for tab_index in range(self.tabs.count()):
+            tab = self.tabs.widget(tab_index)
+            layout = tab.layout()
+            self.clear_layout(layout)
+
+        self.property_labels.clear()
+        self.property_entries.clear()
+        self.property_inputs.clear()
+        
         self.setup_properties()
-        self.selected_object_label.setText(f"Objects: {self.selected_object}")
+        self.selected_object_label.setText(f"Objects: {self.selected_object.name}")
+        self.refresh_properties()
 
     def highlight_selected_item(self, selected_item):
         """Highlights the selected item in the object list."""
@@ -279,14 +267,25 @@ class DebuggerWindow(QWidget):
             return
 
         try:
-            scene = bge.logic.getCurrentScene()
-            obj = scene.objects.get(self.selected_object)
+            obj = self.selected_object  # self.selected_object is already a KX_GameObject
             if not obj:
                 return
+            
+            # Clear existing properties
+            for tab_index in range(self.tabs.count()):
+                tab = self.tabs.widget(tab_index)
+                if tab.layout():
+                    self.clear_layout(tab.layout())
+                    tab.layout().deleteLater()
 
             self.property_labels.clear()
             self.property_entries.clear()
             self.property_inputs.clear()
+
+            # Remove any existing timers
+            if hasattr(self, 'sensor_update_timer'):
+                self.sensor_update_timer.stop()
+                self.sensor_update_timer.deleteLater()
 
             # Populate each tab
             self.populate_physics_tab(obj)
@@ -297,8 +296,9 @@ class DebuggerWindow(QWidget):
             self.populate_logic_sensors_tab(obj)
 
         except Exception as e:
-            self.show_error(f"Error setting up properties for object {self.selected_object}", e)
+            self.show_error(f"Error setting up properties for object {self.selected_object.name}", e)
 
+   
     def populate_physics_tab(self, obj):
         """Populate the physics tab with object physics properties."""
         tab = self.tabs.widget(0)
@@ -315,11 +315,128 @@ class DebuggerWindow(QWidget):
     def populate_game_tab(self, obj):
         """Populate the game tab with object game properties."""
         tab = self.tabs.widget(1)
-        layout = tab.layout()
-        self.clear_layout(layout)  # Clear any previous layout items
+        
+        # Check if the tab already has a layout
+        if tab.layout() is None:
+            main_layout = QVBoxLayout(tab)
+        else:
+            main_layout = tab.layout()
+            self.clear_layout(main_layout)
 
+        # Add search bar
+        self.game_search_bar = QLineEdit()
+        self.game_search_bar.setPlaceholderText("Search properties...")
+        self.game_search_bar.textChanged.connect(self.filter_game_properties)
+        main_layout.addWidget(self.game_search_bar)
+
+        # Create a list widget for properties
+        self.game_property_list = QListWidget()
+        main_layout.addWidget(self.game_property_list)
+
+        # Add properties to the list
         for key in obj.getPropertyNames():
-            self.create_scalar_property_row(layout, obj, key)
+            self.add_game_property_item(obj, key)
+
+        # Connect item selection to display property details
+        self.game_property_list.itemClicked.connect(lambda item: self.display_property_details(obj, item.text()))
+
+        # Create a widget for property details
+        self.property_details_widget = QWidget()
+        self.property_details_layout = QHBoxLayout(self.property_details_widget)
+        main_layout.addWidget(self.property_details_widget)
+
+
+    def add_game_property_item(self, obj, property_name):
+        """Add a game property item to the list."""
+        item = QListWidgetItem(property_name)
+        self.game_property_list.addItem(item)
+
+    def filter_game_properties(self, search_text):
+        """Filter game properties based on search text."""
+        search_text = search_text.lower()
+        for i in range(self.game_property_list.count()):
+            item = self.game_property_list.item(i)
+            item.setHidden(search_text not in item.text().lower())
+
+    def display_property_details(self, obj, property_name):
+        """Display details of the selected property."""
+        # Clear previous details
+        self.clear_layout(self.property_details_layout)
+
+        current_value = truncate(obj[property_name]) if property_name in obj else None
+        
+        # Create widgets for property details
+        value_label = QLabel(f"Current value: {current_value}")
+        input_field = QLineEdit()
+        input_field.setPlaceholderText("New value")
+        input_field.setFixedWidth(100)
+        update_button = QPushButton("Update")
+        update_button.clicked.connect(lambda: self.update_game_property(obj, property_name, input_field.text()))
+
+        # Add widgets to the details layout
+        self.property_details_layout.addWidget(value_label)
+        self.property_details_layout.addWidget(input_field)
+        self.property_details_layout.addWidget(update_button)
+
+    def update_game_property(self, obj, property_name, new_value):
+        """Update the game property with the new value."""
+        try:
+            if property_name in obj:
+                current_type = type(obj[property_name])
+                if current_type is float:
+                    obj[property_name] = float(new_value)
+                elif current_type is int:
+                    obj[property_name] = int(new_value)
+                elif current_type is bool:
+                    obj[property_name] = new_value.lower() in ('true', '1', 'yes')
+                else:
+                    obj[property_name] = new_value
+
+                # Refresh the displayed value
+                self.display_property_details(obj, property_name)
+                logging.info(f"Updated {property_name} of {obj.name} to {new_value}")
+        except Exception as e:
+            self.show_error(f"Error updating property {property_name}", e)
+
+  
+
+    def create_scalar_property_row(self, layout, obj, property_name):
+        """Creates a row with a label for the property value and an input for editing."""
+        try:
+            # Get current value
+            current_value = truncate(obj[property_name]) if property_name in obj else None
+            input_field = QLineEdit()
+            input_field.setPlaceholderText("New value")
+            input_field.setFixedWidth(100)
+            # input_field.setAlignment(Qt.AlignLeft)
+            input_field.installEventFilter(self)
+            input_field.setProperty("property_name", property_name)  # Store property name as a property
+
+            update_button = QPushButton("Update")
+            update_button.setFixedWidth(60)
+            update_button.clicked.connect(lambda: self.update_scalar_property(obj, property_name, input_field.text()))
+
+            label = QLabel(f"{property_name}: {current_value}")
+            # unitlabel = QLabel("Kg")
+            # input_field.setAlignment(Qt.AlignLeft)
+            self.property_labels[property_name] = label
+            self.property_entries[property_name] = input_field
+
+            hbox = QHBoxLayout()
+            hbox.addWidget(label)
+            hbox.addWidget(input_field)
+            # hbox.addWidget(label)
+            hbox.addWidget(update_button)
+
+            # Create a widget to hold the horizontal layout
+            row_widget = QWidget()
+            row_widget.setLayout(hbox)
+            row_widget.setProperty("property_name", property_name)  # Store property name as a property
+
+            layout.addRow(row_widget)
+
+        except Exception as e:
+            self.show_error(f"Error creating property row for {property_name}", e)
 
     def populate_transform_tab(self, obj):
         """Populate the transform tab with object transform properties."""
@@ -420,42 +537,67 @@ class DebuggerWindow(QWidget):
         layout.addRow(QLabel("No animation data available."))  # Placeholder for animation data
 
     def populate_logic_sensors_tab(self, obj):
-        """Populate the logic sensors tab with object logic sensors."""
+        """Populate the logic sensors tab with object logic sensors and actuators."""
         tab = self.tabs.widget(5)
         layout = tab.layout()
         self.clear_layout(layout)  # Clear any previous layout items
 
-        layout.addRow(QLabel("No logic sensors available."))  # Placeholder for logic sensors
+        # Create two panes
+        splitter = QSplitter(Qt.Horizontal)
+        layout.addWidget(splitter)
 
-    def create_scalar_property_row(self, layout, obj, property_name):
-        """Creates a row with a label for the property value and an input for editing."""
-        try:
-            # Get current value
-            current_value = truncate(obj[property_name]) if property_name in obj else None
-            input_field = QLineEdit()
-            input_field.setPlaceholderText("New value")
-            input_field.setFixedWidth(100)
-            input_field.setAlignment(Qt.AlignLeft)
-            input_field.installEventFilter(self)
-            input_field.property_name = property_name  # Store property name in the input field
+        # Sensors pane
+        sensors_widget = QWidget()
+        sensors_layout = QVBoxLayout(sensors_widget)
+        sensors_label = QLabel("Sensors:")
+        sensors_layout.addWidget(sensors_label)
+        self.sensors_list = QListWidget()
+        sensors_layout.addWidget(self.sensors_list)
+        splitter.addWidget(sensors_widget)
 
-            update_button = QPushButton("Update")
-            update_button.setFixedWidth(60)
-            update_button.clicked.connect(lambda: self.update_scalar_property(obj, property_name, input_field.text()))
+        # Actuators pane
+        actuators_widget = QWidget()
+        actuators_layout = QVBoxLayout(actuators_widget)
+        actuators_label = QLabel("Actuators:")
+        actuators_layout.addWidget(actuators_label)
+        self.actuators_list = QListWidget()
+        actuators_layout.addWidget(self.actuators_list)
+        splitter.addWidget(actuators_widget)
 
-            label = QLabel(f"{property_name}: {current_value}")
-            self.property_labels[property_name] = label
-            self.property_entries[property_name] = input_field
+        # Populate sensors list
+        if hasattr(obj, 'sensors'):
+            for sensor in obj.sensors:
+                item = QListWidgetItem(sensor.name)
+                item.setData(Qt.UserRole, sensor)
+                self.sensors_list.addItem(item)
 
-            hbox = QHBoxLayout()
-            hbox.addWidget(input_field)
-            hbox.addWidget(label)
-            hbox.addWidget(update_button)
+            # Connect signals
+            self.sensors_list.itemClicked.connect(self.on_sensor_clicked)
+        
+            # Start a timer to update sensor states
+            self.sensor_update_timer = QTimer(self)
+            self.sensor_update_timer.timeout.connect(lambda: self.update_sensor_states(obj))
+            self.sensor_update_timer.start(100)  # Update every 100 ms
+        else:
+            self.sensors_list.addItem("No sensors available")
+            self.actuators_list.addItem("No actuators available")
 
-            layout.addRow(hbox)
+     
+    def on_sensor_clicked(self, item):
+        sensor = item.data(Qt.UserRole)
+        self.actuators_list.clear()
+        for controller in sensor.controllers:
+            for actuator in controller.actuators:
+                self.actuators_list.addItem(actuator.name)
 
-        except Exception as e:
-            self.show_error(f"Error creating property row for {property_name}", e)
+    def update_sensor_states(self, obj):
+        for i in range(self.sensors_list.count()):
+            item = self.sensors_list.item(i)
+            sensor = item.data(Qt.UserRole)
+            if sensor.positive:
+                item.setBackground(QColor("orange"))
+            else:
+                item.setBackground(QColor("white"))
 
     def create_rotation_property_row(self, layout, obj):
         """Creates a row for rotation property with inputs for each axis in degrees."""
@@ -490,6 +632,36 @@ class DebuggerWindow(QWidget):
 
         except Exception as e:
             self.show_error(f"Error creating rotation property row", e)
+
+    # def create_scalar_property_row(self, layout, obj, property_name):
+    #     """Creates a row with a label for the property value and an input for editing."""
+    #     try:
+    #         # Get current value
+    #         current_value = truncate(obj[property_name]) if property_name in obj else None
+    #         input_field = QLineEdit()
+    #         input_field.setPlaceholderText("New value")
+    #         input_field.setFixedWidth(100)
+    #         input_field.setAlignment(Qt.AlignLeft)
+    #         input_field.installEventFilter(self)
+    #         input_field.property_name = property_name  # Store property name in the input field
+
+    #         update_button = QPushButton("Update")
+    #         update_button.setFixedWidth(60)
+    #         update_button.clicked.connect(lambda: self.update_scalar_property(obj, property_name, input_field.text()))
+
+    #         label = QLabel(f"{property_name}: {current_value}")
+    #         self.property_labels[property_name] = label
+    #         self.property_entries[property_name] = input_field
+
+    #         hbox = QHBoxLayout()
+    #         hbox.addWidget(input_field)
+    #         hbox.addWidget(label)
+    #         hbox.addWidget(update_button)
+
+    #         layout.addRow(hbox)
+
+    #     except Exception as e:
+    #         self.show_error(f"Error creating property row for {property_name}", e)
 
     def create_vector_property_row(self, layout, obj, property_name, label=None, degrees=False, is_euler=False):
         try:
@@ -608,15 +780,14 @@ class DebuggerWindow(QWidget):
             self.show_error(f"Error updating vector property {property_name}", e)
 
     def clear_layout(self, layout):
-        """Helper function to clear a layout."""
         if layout is not None:
             while layout.count():
                 item = layout.takeAt(0)
                 widget = item.widget()
                 if widget is not None:
-                    widget.deleteLater()
-
-
+                    widget.setParent(None)
+                else:
+                    self.clear_layout(item.layout())
 
     def refresh_properties(self):
         """Refreshes the displayed property values of the selected object."""
@@ -624,8 +795,7 @@ class DebuggerWindow(QWidget):
             if not self.search_bar.text():
                 self.update_object_list()
             if self.selected_object:
-                scene = bge.logic.getCurrentScene()
-                obj = scene.objects.get(self.selected_object)
+                obj = self.selected_object  # self.selected_object is already a KX_GameObject
                 if obj:
                     for prop_name, label in self.property_labels.items():
                         if prop_name not in self.active_inputs:
@@ -635,17 +805,57 @@ class DebuggerWindow(QWidget):
                                 value = math.degrees(euler['XYZ'.index(component)])
                                 label.setText(f"{component}: {truncate(value)}°")
                             elif '_' in prop_name:  # Other vector properties
-                                base_prop, component = prop_name.split('_')
+                                parts = prop_name.split('_')
+                                component = parts[-1]
+                                base_prop = '_'.join(parts[:-1])
                                 vector = getattr(obj, base_prop, None)
-                                if vector is not None:
+                                if vector is not None and hasattr(vector, '__getitem__'):
                                     index = ['X', 'Y', 'Z'].index(component)
                                     value = vector[index]
                                     label.setText(f"{component}: {truncate(value)}")
+                                else:
+                                    label.setText(f"{prop_name}: N/A")
                             else:  # Scalar property
-                                current_value = obj[prop_name] if prop_name in obj else None
+                                if hasattr(obj, prop_name):
+                                    current_value = getattr(obj, prop_name)
+                                elif prop_name in obj:
+                                    current_value = obj[prop_name]
+                                else:
+                                    current_value = None
                                 label.setText(f"{prop_name}: {truncate(current_value)}")
+                    self.populate_logic_sensors_tab(obj)
         except Exception as e:
             self.show_error("Error refreshing properties", e)
+
+    # def refresh_properties(self):
+    #     """Refreshes the displayed property values of the selected object."""
+    #     try:
+    #         if not self.search_bar.text():
+    #             self.update_object_list()
+    #         if self.selected_object:
+    #             obj = self.selected_object  # self.selected_object is already a KX_GameObject
+    #             if obj:
+    #                 for prop_name, label in self.property_labels.items():
+    #                     if prop_name not in self.active_inputs:
+    #                         if prop_name.startswith('rotation_'):
+    #                             component = prop_name.split('_')[1]
+    #                             euler = obj.worldOrientation.to_euler()
+    #                             value = math.degrees(euler['XYZ'.index(component)])
+    #                             label.setText(f"{component}: {truncate(value)}°")
+    #                         elif '_' in prop_name:  # Other vector properties
+    #                             base_prop, component = prop_name.split('_')
+    #                             vector = getattr(obj, base_prop, None)
+    #                             if vector is not None:
+    #                                 index = ['X', 'Y', 'Z'].index(component)
+    #                                 value = vector[index]
+    #                                 label.setText(f"{component}: {truncate(value)}")
+    #                         else:  # Scalar property
+    #                             current_value = obj[prop_name] if prop_name in obj else None
+    #                             label.setText(f"{prop_name}: {truncate(current_value)}")
+    #                 self.populate_logic_sensors_tab(obj)
+                    
+    #     except Exception as e:
+    #         self.show_error("Error refreshing properties", e)
 
     def set_fps(self):
         """Set the game's frames per second."""
@@ -729,7 +939,7 @@ class PerformanceGraphWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("BGE Performance Graph")
-        self.setGeometry(300, 300, 600, 400)  # Adjust size as needed
+        self.setGeometry(300, 300, 800, 500)  # Adjust size as needed
 
         layout = QVBoxLayout()
         self.setLayout(layout)
@@ -739,9 +949,12 @@ class PerformanceGraphWindow(QWidget):
         self.graph_widget.setTitle("BGE Performance")
         self.graph_widget.setLabel('left', 'Time (ms)')
         self.graph_widget.setLabel('bottom', 'Time (s)')
-        self.graph_widget.addLegend()
+        # self.graph_widget.addLegend()
 
         layout.addWidget(self.graph_widget)
+
+        self.legend = pg.LegendItem(offset=(70, 30))
+        self.legend.setParentItem(self.graph_widget.graphicsItem())
 
         self.curves = {
             'gpu': self.graph_widget.plot(pen='r', name='GPU'),
@@ -751,6 +964,9 @@ class PerformanceGraphWindow(QWidget):
             'logic': self.graph_widget.plot(pen='m', name='Logic'),
             'animations': self.graph_widget.plot(pen='y', name='Animations')
         }
+
+        for name, curve in self.curves.items():
+            self.legend.addItem(curve, name)
 
         self.performance_data = []
 
@@ -767,26 +983,29 @@ class PerformanceGraphWindow(QWidget):
             values = [d[key] for d in self.performance_data]
             curve.setData(times, values)
 
+        ###################################################
+
         self.graph_widget.setXRange(0, 10, padding=0)
         max_value = max(max(d[key] for d in self.performance_data) for key in self.curves.keys())
         self.graph_widget.setYRange(0, max_value * 1.1, padding=0)
 
-    # def update_graph(self, data_point):
-    #     current_time = time.time()
-    #     self.performance_data.append(data_point)
+        ###########################################################   
 
-    #     # Keep only the last 10 seconds of data
-    #     self.performance_data = [d for d in self.performance_data if current_time - d['time'] <= 10]
 
-    #     # Update graph
-    #     for key, curve in self.curves.items():
-    #         times = [d['time'] - current_time + 10 for d in self.performance_data]
-    #         values = [d[key] for d in self.performance_data]
-    #         curve.setData(times, values)
+        # Update legend with milliseconds and percentages
+        if self.performance_data:
+            latest_data = self.performance_data[-1]
+            total_time = sum(latest_data[key] for key in self.curves.keys())
 
-    #     self.graph_widget.setXRange(0, 10, padding=0)
-    #     max_value = max(max(d[key] for d in self.performance_data) for key in self.curves.keys())
-    #     self.graph_widget.setYRange(0, max_value * 1.1, padding=0)
+            for i, (key, curve) in enumerate(self.curves.items()):
+                value = latest_data[key]
+                percentage = (value / total_time) * 100 if total_time > 0 else 0
+                legend_text = f"{key}: {value:.2f} ms ({percentage:.1f}%)"
+                self.legend.items[i][1].setText(legend_text)
+
+        # Force a redraw of the graph
+        self.graph_widget.update()
+
 
 def truncate(value, digits=3):
     """Truncate a float or list of floats to a specific number of decimal places."""
